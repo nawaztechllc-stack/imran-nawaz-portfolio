@@ -1,4 +1,4 @@
-# Alex Rivera - Professional Portfolio
+# Imran Nawaz - Professional Portfolio
 
 A modern, responsive portfolio website showcasing GRC expertise, cloud security skills, and professional achievements.
 
@@ -177,7 +177,7 @@ This portfolio is for personal use. Feel free to use as inspiration for your own
 
 ## 👤 Contact
 
-**Alex Rivera**
+**Imran Nawaz**
 - Email: Imran.Nawaz@gmail.com
 - LinkedIn: https://www.linkedin.com/in/nawaz-imran/
 
