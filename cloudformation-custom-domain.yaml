@@ -1,0 +1,177 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Update CloudFront distribution to use custom domain inawaztech.com'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Description: 'Project name for resource naming'
+    Default: 'alex-rivera-portfolio'
+  
+  DomainName:
+    Type: String
+    Description: 'Your custom domain'
+    Default: 'inawaztech.com'
+  
+  HostedZoneId:
+    Type: String
+    Description: 'Route 53 Hosted Zone ID'
+    Default: 'Z0801456PGE2APIYHDKB'
+  
+  CertificateArn:
+    Type: String
+    Description: 'ACM Certificate ARN (must be in us-east-1)'
+    Default: 'arn:aws:acm:us-east-1:411805915740:certificate/d15e8e8d-2762-450f-b769-237872a6630d'
+
+Resources:
+  # S3 Bucket for website content
+  WebsiteBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Sub '${ProjectName}-${AWS::AccountId}'
+      WebsiteConfiguration:
+        IndexDocument: 'index.html'
+        ErrorDocument: 'index.html'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-website-bucket'
+
+  # CloudFront Origin Access Control
+  CloudFrontOAC:
+    Type: 'AWS::CloudFront::OriginAccessControl'
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub '${ProjectName}-OAC'
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # CloudFront Distribution with custom domain
+  CloudFrontDistribution:
+    Type: 'AWS::CloudFront::Distribution'
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: 'index.html'
+        HttpVersion: http2
+        PriceClass: PriceClass_100
+        Aliases:
+          - !Ref DomainName
+          - !Sub 'www.${DomainName}'
+        ViewerCertificate:
+          AcmCertificateArn: !Ref CertificateArn
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt WebsiteBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt CloudFrontOAC.Id
+            S3OriginConfig: {}
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          CachedMethods:
+            - GET
+            - HEAD
+          Compress: true
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: none
+          MinTTL: 0
+          DefaultTTL: 86400
+          MaxTTL: 31536000
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 300
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 300
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-distribution'
+
+  # S3 Bucket Policy
+  WebsiteBucketPolicy:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      Bucket: !Ref WebsiteBucket
+      PolicyDocument:
+        Statement:
+          - Sid: AllowCloudFrontServicePrincipal
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: 's3:GetObject'
+            Resource: !Sub '${WebsiteBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                'AWS:SourceArn': !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}'
+
+  # Route 53 Record for root domain
+  WebsiteAliasRecord:
+    Type: 'AWS::Route53::RecordSet'
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref DomainName
+      Type: A
+      AliasTarget:
+        HostedZoneId: Z2FDTNDATAQYW2  # CloudFront hosted zone ID (constant)
+        DNSName: !GetAtt CloudFrontDistribution.DomainName
+        EvaluateTargetHealth: false
+
+  # Route 53 Record for www subdomain
+  WebsiteWWWAliasRecord:
+    Type: 'AWS::Route53::RecordSet'
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub 'www.${DomainName}'
+      Type: A
+      AliasTarget:
+        HostedZoneId: Z2FDTNDATAQYW2  # CloudFront hosted zone ID (constant)
+        DNSName: !GetAtt CloudFrontDistribution.DomainName
+        EvaluateTargetHealth: false
+
+Outputs:
+  WebsiteBucketName:
+    Description: 'S3 bucket name for uploading your website files'
+    Value: !Ref WebsiteBucket
+    Export:
+      Name: !Sub '${ProjectName}-BucketName'
+
+  CloudFrontDistributionId:
+    Description: 'CloudFront distribution ID (use this for cache invalidation)'
+    Value: !Ref CloudFrontDistribution
+    Export:
+      Name: !Sub '${ProjectName}-DistributionId'
+
+  CloudFrontURL:
+    Description: 'CloudFront distribution URL'
+    Value: !Sub 'https://${CloudFrontDistribution.DomainName}'
+    Export:
+      Name: !Sub '${ProjectName}-CloudFrontURL'
+
+  WebsiteURL:
+    Description: 'Your custom domain website URL'
+    Value: !Sub 'https://${DomainName}'
+    Export:
+      Name: !Sub '${ProjectName}-WebsiteURL'
+
+  WWWWebsiteURL:
+    Description: 'Your www subdomain website URL'
+    Value: !Sub 'https://www.${DomainName}'
+    Export:
+      Name: !Sub '${ProjectName}-WWWWebsiteURL'
