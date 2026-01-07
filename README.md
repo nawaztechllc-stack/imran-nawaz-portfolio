@@ -4,7 +4,7 @@ A modern, responsive portfolio website showcasing GRC expertise, cloud security 
 
 ## 🌐 Live Site
 
-**URL:** https://d3if7edapo1xiy.cloudfront.net
+**URL:** https://www.Inawaztech.com
 
 ## 🎨 Features
 
