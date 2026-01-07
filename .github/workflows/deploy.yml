@@ -1,0 +1,119 @@
+# GitHub Actions workflow: Build + deploy a static Vite/Node site to S3 and invalidate CloudFront.
+#
+# Triggers:
+# - On push to main (typical CI/CD)
+# - Manual run via the Actions tab (workflow_dispatch)
+#
+# AWS auth:
+# - Uses GitHub OIDC to assume an AWS role (recommended; no long-lived keys).
+# - All AWS identifiers are provided via GitHub Secrets (no hardcoding).
+#
+# Caching strategy:
+# - Hashed assets (typically dist/assets/*) are uploaded with long-term immutable caching.
+# - HTML/JSON (and other non-hashed entry files) are uploaded with no-cache headers.
+# - CloudFront invalidation is triggered after deployment.
+
+name: Deploy to AWS (S3 + CloudFront)
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+# Least-privilege: grant only what is needed per job.
+permissions:
+  contents: read
+  id-token: write # required for AWS OIDC (assume role)
+
+concurrency:
+  # Prevent overlapping deployments; newest run wins.
+  group: deploy-production
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Build and Deploy
+    runs-on: ubuntu-latest
+
+    env:
+      # All values must be stored as GitHub Secrets (Settings -> Secrets and variables -> Actions)
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
+      CLOUDFRONT_DISTRIBUTION_ID: ${{ secrets.AWS_CLOUDFRONT_DISTRIBUTION_ID }}
+
+    steps:
+      # 1) Checkout code
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 2) Setup Node.js with npm cache
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      # 3) Install dependencies (reproducible installs)
+      - name: Install
+        run: npm ci
+
+      # 4) Build production bundle (outputs to dist/)
+      - name: Build
+        run: npm run build
+
+      # 5) Configure AWS credentials using OIDC -> AssumeRole
+      #    Store the role ARN in a GitHub Secret named AWS_ROLE_TO_ASSUME.
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          role-session-name: github-actions-imran-nawaz-portfolio
+
+      # 6) Upload files to S3 (single sync with --delete)
+      #    We do ONE sync with --delete to keep the bucket perfectly in sync with dist/.
+      #    Then we do targeted copies to apply Cache-Control headers (metadata-directive REPLACE).
+      - name: Sync dist/ to S3 (source of truth)
+        run: |
+          aws s3 sync dist/ "s3://${S3_BUCKET}/" --delete
+
+      # 7) Apply long-term caching to hashed assets
+      #    Vite typically outputs hashed static assets under dist/assets/.
+      - name: Set cache headers for assets (immutable)
+        run: |
+          aws s3 cp dist/assets/ "s3://${S3_BUCKET}/assets/" \
+            --recursive \
+            --cache-control "public,max-age=31536000,immutable" \
+            --metadata-directive REPLACE
+
+      # 8) Apply no-cache to HTML and JSON
+      #    This ensures the app shell (HTML) and any JSON are always revalidated.
+      - name: Set cache headers for HTML/JSON (no-cache)
+        run: |
+          aws s3 cp dist/ "s3://${S3_BUCKET}/" \
+            --recursive \
+            --exclude "*" \
+            --include "*.html" \
+            --include "*.json" \
+            --cache-control "no-cache,no-store,must-revalidate" \
+            --metadata-directive REPLACE
+
+      # 9) Optional: Apply a short cache to all other files
+      #    (e.g., icons, robots.txt, PDFs). Adjust as desired.
+      - name: Set cache headers for other files (short cache)
+        run: |
+          aws s3 cp dist/ "s3://${S3_BUCKET}/" \
+            --recursive \
+            --exclude "assets/*" \
+            --exclude "*.html" \
+            --exclude "*.json" \
+            --cache-control "public,max-age=3600" \
+            --metadata-directive REPLACE
+
+      # 10) Invalidate CloudFront so viewers get the new version right away
+      - name: Invalidate CloudFront
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id "${CLOUDFRONT_DISTRIBUTION_ID}" \
+            --paths "/*"
